@@ -32,7 +32,7 @@ import java.util.concurrent.Executors;
 class InMemoryDeadLetteringIntegrationTest extends DeadLetteringEventIntegrationTest {
 
     @Override
-    DeadLetterQueue<EventMessage<?>> buildDeadLetterQueue() {
+    protected DeadLetterQueue<EventMessage<?>> buildDeadLetterQueue() {
         return InMemoryDeadLetterQueue.<EventMessage<?>>builder()
                                       .expireThreshold(Duration.ofMillis(50))
                                       .scheduledExecutorService(Executors.newSingleThreadScheduledExecutor())

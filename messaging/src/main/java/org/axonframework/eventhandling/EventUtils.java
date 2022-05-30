@@ -119,6 +119,45 @@ public abstract class EventUtils {
         });
     }
 
+    /**
+     * Upcasts and deserializes the given {@code eventEntryStream} using the given {@code serializer} and
+     * {@code upcasterChain}.
+     * <p>
+     * The list of events returned contains lazy deserializing events for optimization purposes. Events represented with
+     * unknown classes are ignored if {@code skipUnknownTypes} is {@code true}
+     *
+     * @param eventEntryStream the stream of entries containing the data of the serialized event
+     * @param serializer       the serializer to deserialize the event with
+     * @param upcasterChain    the chain containing the upcasters to upcast the events with
+     * @return a stream of lazy deserializing events
+     */
+    @SuppressWarnings("OptionalGetWithoutIsPresent")
+    public static Stream<EventMessage<?>> upcastAndDeserializeEvents(
+            Stream<? extends EventData<?>> eventEntryStream,
+            Serializer serializer,
+            EventUpcaster upcasterChain
+    ) {
+        Stream<IntermediateEventRepresentation> upcastResult =
+                upcastAndDeserialize(eventEntryStream, upcasterChain,
+                                     entry -> new InitialEventRepresentation(entry, serializer));
+        return upcastResult.map(ir -> {
+            SerializedMessage<?> serializedMessage = new SerializedMessage<>(ir.getMessageIdentifier(),
+                                                                             new LazyDeserializingObject<>(
+                                                                                     ir::getData,
+                                                                                     ir.getType(), serializer),
+                                                                             ir.getMetaData());
+            if (ir.getAggregateIdentifier().isPresent()) {
+                return new GenericDomainEventMessage<>(ir.getAggregateType().orElse(null),
+                                                       ir.getAggregateIdentifier().get(),
+                                                       ir.getSequenceNumber().get(), serializedMessage,
+                                                       ir::getTimestamp);
+            } else {
+                return new GenericEventMessage<>(serializedMessage,
+                                                 ir::getTimestamp);
+            }
+        });
+    }
+
     private static Stream<IntermediateEventRepresentation> upcastAndDeserialize(
             Stream<? extends EventData<?>> eventEntryStream, EventUpcaster upcasterChain,
             Function<EventData<?>, IntermediateEventRepresentation> entryConverter) {

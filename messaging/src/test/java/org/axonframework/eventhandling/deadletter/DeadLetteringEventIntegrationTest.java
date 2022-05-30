@@ -31,6 +31,8 @@ import org.axonframework.messaging.deadletter.QueueIdentifier;
 import org.axonframework.messaging.unitofwork.RollbackConfigurationType;
 import org.axonframework.utils.InMemoryStreamableEventSource;
 import org.junit.jupiter.api.*;
+import org.springframework.transaction.annotation.Propagation;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.util.HashMap;
 import java.util.HashSet;
@@ -78,7 +80,7 @@ public abstract class DeadLetteringEventIntegrationTest {
      *
      * @return A {@link DeadLetterQueue} implementation used during the integration test.
      */
-    abstract DeadLetterQueue<EventMessage<?>> buildDeadLetterQueue();
+    protected abstract DeadLetterQueue<EventMessage<?>> buildDeadLetterQueue();
 
     @BeforeEach
     void setUp() {
@@ -121,18 +123,21 @@ public abstract class DeadLetteringEventIntegrationTest {
         }
     }
 
+    @Transactional
     void startProcessingEvent() {
         streamingProcessor.start();
     }
 
+    @Transactional
     void startDeadLetterEvaluation() {
         deadLetteringInvoker.start();
     }
 
     @Test
+    @Transactional
     void testFailedEventHandlingEnqueuesTheEvent() {
-        eventSource.publishMessage(GenericEventMessage.asEventMessage(new DeadLetterableEvent("success", SUCCEED)));
-        eventSource.publishMessage(GenericEventMessage.asEventMessage(new DeadLetterableEvent("failure", FAIL)));
+        eventSource.publishMessage(GenericEventMessage.asEventMessage(new DeadLetterableEvent("success", SUCCEED, 1)));
+        eventSource.publishMessage(GenericEventMessage.asEventMessage(new DeadLetterableEvent("failure", FAIL, 2)));
 
         startProcessingEvent();
 
@@ -151,26 +156,27 @@ public abstract class DeadLetteringEventIntegrationTest {
     }
 
     @Test
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
     void testEventsInTheSameSequenceAreAllEnqueuedIfOneOfThemFails() {
         int expectedSuccessfulHandlingCount = 3;
         String aggregateId = UUID.randomUUID().toString();
         QueueIdentifier queueId = new EventHandlingQueueIdentifier(aggregateId, PROCESSING_GROUP);
         // Three events in sequence "aggregateId" succeed
-        eventSource.publishMessage(GenericEventMessage.asEventMessage(new DeadLetterableEvent(aggregateId, SUCCEED)));
-        eventSource.publishMessage(GenericEventMessage.asEventMessage(new DeadLetterableEvent(aggregateId, SUCCEED)));
-        eventSource.publishMessage(GenericEventMessage.asEventMessage(new DeadLetterableEvent(aggregateId, SUCCEED)));
+        eventSource.publishMessage(GenericEventMessage.asEventMessage(new DeadLetterableEvent(aggregateId, SUCCEED, 1)));
+        eventSource.publishMessage(GenericEventMessage.asEventMessage(new DeadLetterableEvent(aggregateId, SUCCEED, 2)));
+        eventSource.publishMessage(GenericEventMessage.asEventMessage(new DeadLetterableEvent(aggregateId, SUCCEED, 3)));
         // On event in sequence "aggregateId" fails, causing the rest to fail
-        DeadLetterableEvent firstDeadLetter = new DeadLetterableEvent(aggregateId, FAIL);
+        DeadLetterableEvent firstDeadLetter = new DeadLetterableEvent(aggregateId, FAIL, 4);
         eventSource.publishMessage(GenericEventMessage.asEventMessage(firstDeadLetter));
-        DeadLetterableEvent secondDeadLetter = new DeadLetterableEvent(aggregateId, SUCCEED);
+        DeadLetterableEvent secondDeadLetter = new DeadLetterableEvent(aggregateId, SUCCEED, 5);
         eventSource.publishMessage(GenericEventMessage.asEventMessage(secondDeadLetter));
-        DeadLetterableEvent thirdDeadLetter = new DeadLetterableEvent(aggregateId, SUCCEED);
+        DeadLetterableEvent thirdDeadLetter = new DeadLetterableEvent(aggregateId, SUCCEED, 6);
         eventSource.publishMessage(GenericEventMessage.asEventMessage(thirdDeadLetter));
 
         startProcessingEvent();
 
-        assertWithin(1, TimeUnit.SECONDS, () -> assertEquals(1, streamingProcessor.processingStatus().size()));
-        //noinspection OptionalGetWithoutIsPresent
+        assertWithin(25, TimeUnit.SECONDS, () -> assertEquals(1, streamingProcessor.processingStatus().size()));
+//        noinspection OptionalGetWithoutIsPresent
         assertWithin(
                 1, TimeUnit.SECONDS,
                 () -> assertTrue(streamingProcessor.processingStatus().get(0).getCurrentPosition().getAsLong() >= 6)
@@ -188,36 +194,46 @@ public abstract class DeadLetteringEventIntegrationTest {
 
         Optional<DeadLetter<EventMessage<?>>> first = deadLetterQueue.take(PROCESSING_GROUP);
         assertTrue(first.isPresent());
-        assertEquals(firstDeadLetter, first.get().message().getPayload());
+        assertLettersEqual(firstDeadLetter, first.get().message().getPayload());
         // Acknowledging removes the letter from the queue, allowing us to check the following letter
         first.get().acknowledge();
         Optional<DeadLetter<EventMessage<?>>> second = deadLetterQueue.take(PROCESSING_GROUP);
         assertTrue(second.isPresent());
-        assertEquals(secondDeadLetter, second.get().message().getPayload());
+        assertLettersEqual(secondDeadLetter, second.get().message().getPayload());
         second.get().acknowledge();
         Optional<DeadLetter<EventMessage<?>>> third = deadLetterQueue.take(PROCESSING_GROUP);
         assertTrue(third.isPresent());
-        assertEquals(thirdDeadLetter, third.get().message().getPayload());
+        assertLettersEqual(thirdDeadLetter, third.get().message().getPayload());
         third.get().acknowledge();
         assertFalse(deadLetterQueue.contains(queueId));
     }
 
+    private void assertLettersEqual(Object actual, Object expected) {
+        assertInstanceOf(DeadLetterableEvent.class, actual);
+        assertInstanceOf(DeadLetterableEvent.class, expected);
+        DeadLetterableEvent actualEvent = (DeadLetterableEvent) actual;
+        DeadLetterableEvent expectedEvent = (DeadLetterableEvent) expected;
+        assertEquals(expectedEvent.getAggregateIdentifier(), actualEvent.getAggregateIdentifier());
+        assertEquals(expectedEvent.getSequence(), actualEvent.getSequence());
+    }
+
     @Test
+    @Transactional
     void testSuccessfulEvaluationRemovesTheDeadLetterFromTheQueue() {
         int expectedSuccessfulHandlingCount = 3;
         int expectedSuccessfulHandlingCountAfterEvaluation = 6;
         String aggregateId = UUID.randomUUID().toString();
         QueueIdentifier queueId = new EventHandlingQueueIdentifier(aggregateId, PROCESSING_GROUP);
         // Three events in sequence "aggregateId" succeed
-        eventSource.publishMessage(GenericEventMessage.asEventMessage(new DeadLetterableEvent(aggregateId, SUCCEED)));
-        eventSource.publishMessage(GenericEventMessage.asEventMessage(new DeadLetterableEvent(aggregateId, SUCCEED)));
-        eventSource.publishMessage(GenericEventMessage.asEventMessage(new DeadLetterableEvent(aggregateId, SUCCEED)));
+        eventSource.publishMessage(GenericEventMessage.asEventMessage(new DeadLetterableEvent(aggregateId, SUCCEED, 1)));
+        eventSource.publishMessage(GenericEventMessage.asEventMessage(new DeadLetterableEvent(aggregateId, SUCCEED, 2)));
+        eventSource.publishMessage(GenericEventMessage.asEventMessage(new DeadLetterableEvent(aggregateId, SUCCEED, 3)));
         // On event in sequence "aggregateId" fails, causing the rest to fail, but succeed on a retry
-        DeadLetterableEvent firstDeadLetter = new DeadLetterableEvent(aggregateId, FAIL, SUCCEED_RETRY);
+        DeadLetterableEvent firstDeadLetter = new DeadLetterableEvent(aggregateId, 4, FAIL, SUCCEED_RETRY);
         eventSource.publishMessage(GenericEventMessage.asEventMessage(firstDeadLetter));
-        DeadLetterableEvent secondDeadLetter = new DeadLetterableEvent(aggregateId, SUCCEED, SUCCEED_RETRY);
+        DeadLetterableEvent secondDeadLetter = new DeadLetterableEvent(aggregateId, 5, SUCCEED, SUCCEED_RETRY);
         eventSource.publishMessage(GenericEventMessage.asEventMessage(secondDeadLetter));
-        DeadLetterableEvent thirdDeadLetter = new DeadLetterableEvent(aggregateId, SUCCEED, SUCCEED_RETRY);
+        DeadLetterableEvent thirdDeadLetter = new DeadLetterableEvent(aggregateId, 6, SUCCEED, SUCCEED_RETRY);
         eventSource.publishMessage(GenericEventMessage.asEventMessage(thirdDeadLetter));
 
         startProcessingEvent();
@@ -246,21 +262,22 @@ public abstract class DeadLetteringEventIntegrationTest {
     }
 
     @Test
+    @Transactional
     void testUnsuccessfulEvaluationRequeuesTheDeadLetterInTheQueue() {
         int expectedSuccessfulHandlingCount = 3;
         int expectedSuccessfulHandlingCountAfterEvaluation = 5;
         String aggregateId = UUID.randomUUID().toString();
         // Three events in sequence "aggregateId" succeed
-        eventSource.publishMessage(GenericEventMessage.asEventMessage(new DeadLetterableEvent(aggregateId, SUCCEED)));
-        eventSource.publishMessage(GenericEventMessage.asEventMessage(new DeadLetterableEvent(aggregateId, SUCCEED)));
-        eventSource.publishMessage(GenericEventMessage.asEventMessage(new DeadLetterableEvent(aggregateId, SUCCEED)));
+        eventSource.publishMessage(GenericEventMessage.asEventMessage(new DeadLetterableEvent(aggregateId, SUCCEED, 1)));
+        eventSource.publishMessage(GenericEventMessage.asEventMessage(new DeadLetterableEvent(aggregateId, SUCCEED, 2)));
+        eventSource.publishMessage(GenericEventMessage.asEventMessage(new DeadLetterableEvent(aggregateId, SUCCEED, 3)));
         // On event in sequence "aggregateId" fails, causing the rest to fail, but...
-        DeadLetterableEvent firstDeadLetter = new DeadLetterableEvent(aggregateId, FAIL, SUCCEED_RETRY);
+        DeadLetterableEvent firstDeadLetter = new DeadLetterableEvent(aggregateId, 4, FAIL, SUCCEED_RETRY);
         eventSource.publishMessage(GenericEventMessage.asEventMessage(firstDeadLetter));
-        DeadLetterableEvent secondDeadLetter = new DeadLetterableEvent(aggregateId, SUCCEED, SUCCEED_RETRY);
+        DeadLetterableEvent secondDeadLetter = new DeadLetterableEvent(aggregateId, 5, SUCCEED, SUCCEED_RETRY);
         eventSource.publishMessage(GenericEventMessage.asEventMessage(secondDeadLetter));
         // ...the last retry fails.
-        DeadLetterableEvent thirdDeadLetter = new DeadLetterableEvent(aggregateId, SUCCEED, FAIL_RETRY);
+        DeadLetterableEvent thirdDeadLetter = new DeadLetterableEvent(aggregateId, 6, SUCCEED, FAIL_RETRY);
         eventSource.publishMessage(GenericEventMessage.asEventMessage(thirdDeadLetter));
 
         startProcessingEvent();
@@ -291,7 +308,7 @@ public abstract class DeadLetteringEventIntegrationTest {
             Optional<DeadLetter<EventMessage<?>>> requeuedLetter = deadLetterQueue.take(PROCESSING_GROUP);
             assertTrue(requeuedLetter.isPresent());
             DeadLetter<EventMessage<?>> result = requeuedLetter.get();
-            assertEquals(thirdDeadLetter, result.message().getPayload());
+            assertLettersEqual(thirdDeadLetter, result.message().getPayload());
             assertEquals(1, result.numberOfRetries());
         });
     }
@@ -305,6 +322,7 @@ public abstract class DeadLetteringEventIntegrationTest {
         private final Set<String> shouldSucceedOnEvaluation = new HashSet<>();
 
         @EventHandler
+        @Transactional
         public void on(DeadLetterableEvent event, @MessageIdentifier String eventIdentifier) {
             String aggregateIdentifier = event.getAggregateIdentifier();
             if ((event.shouldSucceed() && event.shouldSucceedOnEvaluation())
@@ -339,18 +357,20 @@ public abstract class DeadLetteringEventIntegrationTest {
     private static class DeadLetterableEvent {
 
         private final String aggregateIdentifier;
+        private final int sequence;
         private final boolean shouldSucceed;
         private final boolean shouldSucceedOnEvaluation;
 
         private DeadLetterableEvent(String aggregateIdentifier,
-                                    boolean shouldSucceed) {
-            this(aggregateIdentifier, shouldSucceed, true);
+                                    boolean shouldSucceed, int sequence) {
+            this(aggregateIdentifier, sequence, shouldSucceed, true);
         }
 
         private DeadLetterableEvent(String aggregateIdentifier,
-                                    boolean shouldSucceed,
+                                    int sequence, boolean shouldSucceed,
                                     boolean shouldSucceedOnEvaluation) {
             this.aggregateIdentifier = aggregateIdentifier;
+            this.sequence = sequence;
             this.shouldSucceed = shouldSucceed;
             this.shouldSucceedOnEvaluation = shouldSucceedOnEvaluation;
         }
@@ -365,6 +385,10 @@ public abstract class DeadLetteringEventIntegrationTest {
 
         public boolean shouldSucceedOnEvaluation() {
             return shouldSucceedOnEvaluation;
+        }
+
+        public int getSequence() {
+            return sequence;
         }
     }
 }

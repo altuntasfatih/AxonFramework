@@ -14,16 +14,22 @@
  * limitations under the License.
  */
 
-package org.axonframework.messaging.deadletter;
+package org.axonframework.eventhandling.deadletter.jpa;
 
 import org.axonframework.common.AxonConfigurationException;
+import org.axonframework.common.jpa.EntityManagerProvider;
+import org.axonframework.common.jpa.SimpleEntityManagerProvider;
+import org.axonframework.common.transaction.Transaction;
+import org.axonframework.common.transaction.TransactionManager;
 import org.axonframework.eventhandling.EventMessage;
 import org.axonframework.eventhandling.GenericEventMessage;
 import org.axonframework.eventhandling.deadletter.EventHandlingQueueIdentifier;
 import org.axonframework.lifecycle.Lifecycle;
-import org.axonframework.messaging.Message;
+import org.axonframework.messaging.deadletter.DeadLetterQueue;
+import org.axonframework.messaging.deadletter.DeadLetterQueueTest;
 import org.junit.jupiter.api.*;
 
+import java.sql.SQLException;
 import java.time.Clock;
 import java.time.Duration;
 import java.util.UUID;
@@ -33,25 +39,46 @@ import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.IntStream;
 import javax.annotation.Nonnull;
+import javax.persistence.EntityManager;
+import javax.persistence.EntityManagerFactory;
+import javax.persistence.EntityTransaction;
+import javax.persistence.Persistence;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.Mockito.*;
 
-/**
- * Test class validating the {@link InMemoryDeadLetterQueue}.
- *
- * @author Steven van Beelen
- */
-class InMemoryDeadLetterQueueTest extends DeadLetterQueueTest<EventHandlingQueueIdentifier, EventMessage<?>> {
+public class JpaDeadLetterQueueTest extends DeadLetterQueueTest<EventHandlingQueueIdentifier, EventMessage<?>> {
 
     private static final Duration EXPIRE_THRESHOLD = Duration.ofMillis(100);
+    EntityManagerFactory emf = Persistence.createEntityManagerFactory("dlq");
+    EntityManager entityManager = emf.createEntityManager();
+
+    private final TransactionManager transactionManager = spy(new NoOpTransactionManager());
+    private EntityTransaction transaction;
+
+    @BeforeEach
+    public void setUpJpa() throws SQLException {
+        transaction = entityManager.getTransaction();
+        transaction.begin();
+    }
+
+    @AfterEach
+    public void rollback() {
+        transaction.rollback();
+    }
 
     @Override
-    public DeadLetterQueue<EventMessage<?>> buildTestSubject() {
-        return InMemoryDeadLetterQueue.<EventMessage<?>>builder()
-                                      .expireThreshold(EXPIRE_THRESHOLD)
-                                      .build();
+    public DeadLetterQueue buildTestSubject() {
+        EntityManagerProvider entityManagerProvider = new SimpleEntityManagerProvider(entityManager);
+        return JpaDeadLetterQueue
+                .builder()
+                .transactionManager(transactionManager)
+                .entityManagerProvider(entityManagerProvider)
+                .expireThreshold(EXPIRE_THRESHOLD)
+                .maxQueues(128)
+                .build();
     }
+
 
     @Override
     public EventHandlingQueueIdentifier generateQueueId() {
@@ -70,7 +97,7 @@ class InMemoryDeadLetterQueueTest extends DeadLetterQueueTest<EventHandlingQueue
 
     @Override
     public void setClock(Clock clock) {
-        InMemoryDeadLetterQueue.clock = clock;
+        JpaDeadLetterQueue.clock = clock;
     }
 
     @Override
@@ -78,11 +105,12 @@ class InMemoryDeadLetterQueueTest extends DeadLetterQueueTest<EventHandlingQueue
         return EXPIRE_THRESHOLD;
     }
 
+
     @Test
     void testMaxQueues() {
         int expectedMaxQueues = 128;
 
-        InMemoryDeadLetterQueue<Message<?>> testSubject = InMemoryDeadLetterQueue.builder()
+        JpaDeadLetterQueue<EventMessage<?>> testSubject = JpaDeadLetterQueue.builder()
                                                                                  .maxQueues(expectedMaxQueues)
                                                                                  .build();
 
@@ -93,7 +121,7 @@ class InMemoryDeadLetterQueueTest extends DeadLetterQueueTest<EventHandlingQueue
     void testMaxQueueSize() {
         int expectedMaxQueueSize = 128;
 
-        InMemoryDeadLetterQueue<Message<?>> testSubject = InMemoryDeadLetterQueue.builder()
+        JpaDeadLetterQueue<EventMessage<?>> testSubject = JpaDeadLetterQueue.builder()
                                                                                  .maxQueueSize(expectedMaxQueueSize)
                                                                                  .build();
 
@@ -102,7 +130,7 @@ class InMemoryDeadLetterQueueTest extends DeadLetterQueueTest<EventHandlingQueue
 
     @Test
     void testRegisterLifecycleHandlerRegistersQueuesShutdown() {
-        InMemoryDeadLetterQueue<Message<?>> testSubject = spy(InMemoryDeadLetterQueue.defaultQueue());
+        JpaDeadLetterQueue<EventMessage<?>> testSubject = spy(JpaDeadLetterQueue.defaultQueue());
 
         AtomicInteger onStartInvoked = new AtomicInteger(0);
         AtomicInteger onShutdownInvoked = new AtomicInteger(0);
@@ -128,8 +156,8 @@ class InMemoryDeadLetterQueueTest extends DeadLetterQueueTest<EventHandlingQueue
     @Test
     void testShutdownReturnsCompletedFutureForCustomizedExecutor() {
         ScheduledExecutorService scheduledExecutor = spy(Executors.newScheduledThreadPool(1));
-        InMemoryDeadLetterQueue<Message<?>> testSubject =
-                InMemoryDeadLetterQueue.builder()
+        JpaDeadLetterQueue<EventMessage<?>> testSubject =
+                JpaDeadLetterQueue.builder()
                                        .scheduledExecutorService(scheduledExecutor)
                                        .build();
 
@@ -141,12 +169,12 @@ class InMemoryDeadLetterQueueTest extends DeadLetterQueueTest<EventHandlingQueue
 
     @Test
     void testBuildDefaultQueue() {
-        assertDoesNotThrow(() -> InMemoryDeadLetterQueue.defaultQueue());
+        assertDoesNotThrow(() -> JpaDeadLetterQueue.defaultQueue());
     }
 
     @Test
     void testBuildWithNegativeMaxQueuesThrowsAxonConfigurationException() {
-        InMemoryDeadLetterQueue.Builder<Message<?>> builderTestSubject = InMemoryDeadLetterQueue.builder();
+        JpaDeadLetterQueue.Builder<EventMessage<?>> builderTestSubject = JpaDeadLetterQueue.builder();
 
         assertThrows(AxonConfigurationException.class, () -> builderTestSubject.maxQueues(-1));
     }
@@ -154,7 +182,7 @@ class InMemoryDeadLetterQueueTest extends DeadLetterQueueTest<EventHandlingQueue
     @Test
     void testBuildWithValueLowerThanMinimumMaxQueuesThrowsAxonConfigurationException() {
         IntStream.range(0, 127).forEach(i -> {
-            InMemoryDeadLetterQueue.Builder<Message<?>> builderTestSubject = InMemoryDeadLetterQueue.builder();
+            JpaDeadLetterQueue.Builder<EventMessage<?>> builderTestSubject = JpaDeadLetterQueue.builder();
 
             assertThrows(AxonConfigurationException.class, () -> builderTestSubject.maxQueues(i));
         });
@@ -162,7 +190,7 @@ class InMemoryDeadLetterQueueTest extends DeadLetterQueueTest<EventHandlingQueue
 
     @Test
     void testBuildWithNegativeMaxQueueSizeThrowsAxonConfigurationException() {
-        InMemoryDeadLetterQueue.Builder<Message<?>> builderTestSubject = InMemoryDeadLetterQueue.builder();
+        JpaDeadLetterQueue.Builder<EventMessage<?>> builderTestSubject = JpaDeadLetterQueue.builder();
 
         assertThrows(AxonConfigurationException.class, () -> builderTestSubject.maxQueueSize(-1));
     }
@@ -170,7 +198,7 @@ class InMemoryDeadLetterQueueTest extends DeadLetterQueueTest<EventHandlingQueue
     @Test
     void testBuildWithValueLowerThanMinimumMaxQueueSizeThrowsAxonConfigurationException() {
         IntStream.range(0, 127).forEach(i -> {
-            InMemoryDeadLetterQueue.Builder<Message<?>> builderTestSubject = InMemoryDeadLetterQueue.builder();
+            JpaDeadLetterQueue.Builder<EventMessage<?>> builderTestSubject = JpaDeadLetterQueue.builder();
 
             assertThrows(AxonConfigurationException.class, () -> builderTestSubject.maxQueueSize(i));
         });
@@ -178,29 +206,50 @@ class InMemoryDeadLetterQueueTest extends DeadLetterQueueTest<EventHandlingQueue
 
     @Test
     void testBuildWithNullExpireThresholdThrowsAxonConfigurationException() {
-        InMemoryDeadLetterQueue.Builder<Message<?>> builderTestSubject = InMemoryDeadLetterQueue.builder();
+        JpaDeadLetterQueue.Builder<EventMessage<?>> builderTestSubject = JpaDeadLetterQueue.builder();
 
         assertThrows(AxonConfigurationException.class, () -> builderTestSubject.expireThreshold(null));
     }
 
     @Test
     void testBuildWithNegativeExpireThresholdThrowsAxonConfigurationException() {
-        InMemoryDeadLetterQueue.Builder<Message<?>> builderTestSubject = InMemoryDeadLetterQueue.builder();
+        JpaDeadLetterQueue.Builder<EventMessage<?>> builderTestSubject = JpaDeadLetterQueue.builder();
 
         assertThrows(AxonConfigurationException.class, () -> builderTestSubject.expireThreshold(Duration.ofMillis(-1)));
     }
 
     @Test
     void testBuildWithZeroExpireThresholdThrowsAxonConfigurationException() {
-        InMemoryDeadLetterQueue.Builder<Message<?>> builderTestSubject = InMemoryDeadLetterQueue.builder();
+        JpaDeadLetterQueue.Builder<EventMessage<?>> builderTestSubject = JpaDeadLetterQueue.builder();
 
         assertThrows(AxonConfigurationException.class, () -> builderTestSubject.expireThreshold(Duration.ZERO));
     }
 
     @Test
     void testBuildWithNullScheduledExecutorServiceThrowsAxonConfigurationException() {
-        InMemoryDeadLetterQueue.Builder<Message<?>> builderTestSubject = InMemoryDeadLetterQueue.builder();
+        JpaDeadLetterQueue.Builder<EventMessage<?>> builderTestSubject = JpaDeadLetterQueue.builder();
 
         assertThrows(AxonConfigurationException.class, () -> builderTestSubject.scheduledExecutorService(null));
+    }
+
+    /**
+     * A non-final {@link TransactionManager} implementation, so that it can be spied upon through Mockito.
+     */
+    private static class NoOpTransactionManager implements TransactionManager {
+
+        @Override
+        public Transaction startTransaction() {
+            return new Transaction() {
+                @Override
+                public void commit() {
+                    // No-op
+                }
+
+                @Override
+                public void rollback() {
+                    // No-op
+                }
+            };
+        }
     }
 }

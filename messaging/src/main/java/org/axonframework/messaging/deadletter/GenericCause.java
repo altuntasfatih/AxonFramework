@@ -25,7 +25,7 @@ import java.util.Objects;
  * @author Mitchel Herrijgers
  * @since 4.6.0
  */
-class GenericCause implements Cause {
+public class GenericCause implements Cause {
 
     private final String type;
     private final String message;
@@ -54,12 +54,12 @@ class GenericCause implements Cause {
 
     @Override
     public String type() {
-        return null;
+        return this.type;
     }
 
     @Override
     public String message() {
-        return null;
+        return this.message;
     }
 
     @Override

@@ -16,11 +16,11 @@
 
 package org.axonframework.messaging.deadletter;
 
+import org.axonframework.common.IdentifierFactory;
 import org.axonframework.messaging.Message;
 
 import java.time.Instant;
 import java.util.Objects;
-import java.util.UUID;
 import java.util.function.Consumer;
 import javax.annotation.Nullable;
 
@@ -30,7 +30,7 @@ import javax.annotation.Nullable;
  * @author Steven van Beelen
  * @since 4.6.0
  */
-class GenericDeadLetter<T extends Message<?>> implements DeadLetter<T> {
+public class GenericDeadLetter<T extends Message<?>> implements DeadLetter<T> {
 
     private final String identifier;
     private final QueueIdentifier queueIdentifier;
@@ -42,7 +42,7 @@ class GenericDeadLetter<T extends Message<?>> implements DeadLetter<T> {
     private final Consumer<DeadLetter<T>> acknowledgeOperation;
     private final Consumer<DeadLetter<T>> requeueOperation;
 
-    GenericDeadLetter(DeadLetter<T> letter,
+    public GenericDeadLetter(DeadLetter<T> letter,
                       Instant expiresAt,
                       Consumer<DeadLetter<T>> acknowledgeOperation,
                       Consumer<DeadLetter<T>> requeueOperation) {
@@ -57,7 +57,7 @@ class GenericDeadLetter<T extends Message<?>> implements DeadLetter<T> {
              requeueOperation);
     }
 
-    GenericDeadLetter(QueueIdentifier queueIdentifier,
+    public GenericDeadLetter(QueueIdentifier queueIdentifier,
                       T message,
                       Throwable cause,
                       Instant deadLettered,
@@ -74,7 +74,7 @@ class GenericDeadLetter<T extends Message<?>> implements DeadLetter<T> {
              requeueOperation);
     }
 
-    GenericDeadLetter(QueueIdentifier queueIdentifier,
+    public GenericDeadLetter(QueueIdentifier queueIdentifier,
                       T message,
                       Cause cause,
                       Instant deadLettered,
@@ -82,11 +82,11 @@ class GenericDeadLetter<T extends Message<?>> implements DeadLetter<T> {
                       int numberOfRetries,
                       Consumer<DeadLetter<T>> acknowledgeOperation,
                       Consumer<DeadLetter<T>> requeueOperation) {
-        this(UUID.randomUUID().toString(), queueIdentifier, message, cause, deadLettered, expiresAt, numberOfRetries,
+        this(IdentifierFactory.getInstance().generateIdentifier(), queueIdentifier, message, cause, deadLettered, expiresAt, numberOfRetries,
              acknowledgeOperation, requeueOperation);
     }
 
-    GenericDeadLetter(String identifier,
+    public GenericDeadLetter(String identifier,
                       QueueIdentifier queueIdentifier,
                       T message,
                       Cause cause,
