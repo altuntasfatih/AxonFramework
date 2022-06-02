@@ -21,10 +21,10 @@ import org.axonframework.eventhandling.EventMessage;
 import org.axonframework.messaging.deadletter.Cause;
 import org.axonframework.messaging.deadletter.GenericCause;
 import org.axonframework.serialization.Serializer;
-import org.hibernate.annotations.Formula;
 
 import java.time.Instant;
 import javax.persistence.Basic;
+import javax.persistence.Embedded;
 import javax.persistence.Entity;
 import javax.persistence.Id;
 import javax.persistence.Index;
@@ -38,18 +38,15 @@ import javax.persistence.Table;
  */
 @Entity
 @Table(indexes = {
-        @Index(columnList = "queueGroup,identifier"),
+        @Index(columnList = "identifier"),
 })
 public class DeadLetterEntry extends AbstractEventEntry<byte[]> {
 
     @Id
     private String deadLetterId;
 
-    @Basic(optional = false)
-    private String queueGroup;
-
-    @Basic(optional = false)
-    private String identifier;
+    @Embedded
+    private DeadLetterQueueIdentifier identifier;
 
     @Basic(optional = false)
     private int index;
@@ -68,12 +65,11 @@ public class DeadLetterEntry extends AbstractEventEntry<byte[]> {
     @Basic(optional = false)
     private int numberOfRetries;
 
-    public DeadLetterEntry(String deadLetterId, String group, String identifier, int index,
+    public DeadLetterEntry(String deadLetterId, DeadLetterQueueIdentifier identifier, int index,
                            EventMessage<?> eventMessage, Serializer serializer,
                            Instant deadLetteredAt, Instant expiresAt, Cause cause) {
         super(eventMessage, serializer, byte[].class);
         this.deadLetterId = deadLetterId;
-        this.queueGroup = group;
         this.identifier = identifier;
         this.index = index;
         this.deadLetteredAt = deadLetteredAt;
@@ -97,11 +93,7 @@ public class DeadLetterEntry extends AbstractEventEntry<byte[]> {
     }
 
 
-    public String getQueueGroup() {
-        return queueGroup;
-    }
-
-    public String getIdentifier() {
+    public DeadLetterQueueIdentifier getIdentifier() {
         return identifier;
     }
 
@@ -150,13 +142,5 @@ public class DeadLetterEntry extends AbstractEventEntry<byte[]> {
 
     public void setProcessingStarted(Instant processingStarted) {
         this.processingStarted = processingStarted;
-    }
-
-
-    @Formula("concat(queue_group,identifier)")
-    private String queueIdentifierConcatenated;
-
-    public String getQueueIdentifierConcatenated() {
-        return queueIdentifierConcatenated;
     }
 }

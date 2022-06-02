@@ -24,7 +24,6 @@ import org.axonframework.common.jpa.EntityManagerProvider;
 import org.axonframework.common.transaction.TransactionManager;
 import org.axonframework.eventhandling.EventMessage;
 import org.axonframework.eventhandling.EventUtils;
-import org.axonframework.eventhandling.deadletter.EventHandlingQueueIdentifier;
 import org.axonframework.messaging.Message;
 import org.axonframework.messaging.deadletter.DeadLetter;
 import org.axonframework.messaging.deadletter.DeadLetterEvaluationException;
@@ -34,6 +33,7 @@ import org.axonframework.messaging.deadletter.GenericCause;
 import org.axonframework.messaging.deadletter.GenericDeadLetter;
 import org.axonframework.messaging.deadletter.QueueIdentifier;
 import org.axonframework.messaging.deadletter.SchedulingDeadLetterQueue;
+import org.axonframework.messaging.unitofwork.CurrentUnitOfWork;
 import org.axonframework.serialization.Serializer;
 import org.axonframework.serialization.upcasting.event.EventUpcaster;
 import org.axonframework.serialization.upcasting.event.NoOpEventUpcaster;
@@ -46,7 +46,9 @@ import java.lang.invoke.MethodHandles;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.concurrent.Executors;
@@ -168,8 +170,7 @@ public class JpaDeadLetterQueue<T extends EventMessage<?>> extends SchedulingDea
         Instant deadLettered = clock.instant();
         Instant expiresAt = cause == null ? deadLettered : deadLettered.plus(expireThreshold);
         DeadLetterEntry jpaEntry = new DeadLetterEntry(IdentifierFactory.getInstance().generateIdentifier(),
-                                                       identifier.group(),
-                                                       identifier.identifier().toString(),
+                                                       toJpaIdentifier(identifier),
                                                        getNextIndexForQueueIdentifier(identifier),
                                                        deadLetter,
                                                        serializer,
@@ -182,6 +183,7 @@ public class JpaDeadLetterQueue<T extends EventMessage<?>> extends SchedulingDea
             entityManager().persist(jpaEntry);
             entityManager().flush();
         });
+        dlqCache().ifPresent(Map::clear);
         scheduleAvailabilityCallbacks(identifier);
 
         return toDeadLetter(jpaEntry);
@@ -215,7 +217,7 @@ public class JpaDeadLetterQueue<T extends EventMessage<?>> extends SchedulingDea
         return transactionManager.fetchInTransaction(() -> {
             try {
                 return entityManager.createQuery(
-                                            "SELECT max(dl.index) FROM DeadLetterEntry dl where dl.queueGroup=:group and dl.identifier=:identifier",
+                                            "SELECT max(dl.index) FROM DeadLetterEntry dl where dl.identifier.queueGroup=:group and dl.identifier.identifier=:identifier",
                                             Integer.class
                                     )
                                     .setParameter("identifier", identifier.identifier())
@@ -246,7 +248,7 @@ public class JpaDeadLetterQueue<T extends EventMessage<?>> extends SchedulingDea
         // TODO: Upcast to null test
         return new GenericDeadLetter<>(
                 entry.getDeadLetterId(),
-                new EventHandlingQueueIdentifier(entry.getIdentifier(), entry.getQueueGroup()),
+                entry.getIdentifier(),
                 eventMessage,
                 entry.getCause(),
                 entry.getDeadLetteredAt(),
@@ -255,6 +257,10 @@ public class JpaDeadLetterQueue<T extends EventMessage<?>> extends SchedulingDea
                 this::acknowledge,
                 this::requeue
         );
+    }
+
+    private DeadLetterQueueIdentifier toJpaIdentifier(QueueIdentifier identifier) {
+        return new DeadLetterQueueIdentifier(identifier.group(), identifier.identifier().toString());
     }
 
     private void acknowledge(DeadLetter<T> letter) {
@@ -279,12 +285,31 @@ public class JpaDeadLetterQueue<T extends EventMessage<?>> extends SchedulingDea
         entityManager.persist(letterEntity);
     }
 
+    /**
+     * Checks whether the queue contains a specified {@link QueueIdentifier}.
+     * To improve performance, the JPA implementation keeps a map in the unitOfWork using already checked identifiers.
+     * This prevents double queries to the database.
+     *
+     * @param identifier The identifier used to validate for contained {@link DeadLetter dead-letters} instances.
+     */
     @Override
     public boolean contains(@Nonnull QueueIdentifier identifier) {
         if (logger.isDebugEnabled()) {
             logger.debug("Validating existence of sequence identifier [{}].", identifier.combinedIdentifier());
         }
-        return getMaxIndexForQueueIdentifier(identifier) != null;
+        return dlqCache()
+                .map(cache -> {
+                    if (!cache.containsKey(identifier)) {
+                        return cache.put(identifier, getMaxIndexForQueueIdentifier(identifier) != null);
+                    }
+                    return cache.get(identifier);
+                })
+                // No UnitOfWork active, fall back to simple query
+                .orElseGet(() -> getMaxIndexForQueueIdentifier(identifier) != null);
+    }
+
+    private Optional<Map<QueueIdentifier, Boolean>> dlqCache() {
+        return CurrentUnitOfWork.map(uow -> uow.getOrComputeResource("__dlq", s -> new HashMap<>()));
     }
 
     @Override
@@ -324,7 +349,7 @@ public class JpaDeadLetterQueue<T extends EventMessage<?>> extends SchedulingDea
         EntityManager entityManager = entityManagerProvider.getEntityManager();
         return transactionManager.fetchInTransaction(
                 () -> entityManager.createQuery(
-                                           "SELECT count(dl) FROM DeadLetterEntry dl where dl.queueGroup=:group and dl.identifier=:identifier",
+                                           "SELECT count(dl) FROM DeadLetterEntry dl where dl.identifier.queueGroup=:group and dl.identifier.identifier=:identifier",
                                            Long.class
                                    )
                                    .setParameter("group", queueIdentifier.group())
@@ -342,7 +367,7 @@ public class JpaDeadLetterQueue<T extends EventMessage<?>> extends SchedulingDea
         EntityManager entityManager = entityManagerProvider.getEntityManager();
         return transactionManager.fetchInTransaction(
                 () -> entityManager.createQuery(
-                                           "SELECT count(distinct dl.queueIdentifierConcatenated) FROM DeadLetterEntry dl",
+                                           "SELECT count(distinct dl.identifier) FROM DeadLetterEntry dl",
                                            Long.class
                                    )
                                    .getSingleResult()
@@ -368,8 +393,8 @@ public class JpaDeadLetterQueue<T extends EventMessage<?>> extends SchedulingDea
             DeadLetterEntry entry = transactionManager.fetchInTransaction(
                     () -> entityManager.createQuery(
                                                "SELECT dl FROM DeadLetterEntry dl "
-                                                       + "where dl.queueGroup=:group "
-                                                       + "and dl.index = (select min(dl2.index) from DeadLetterEntry dl2 where dl2.queueGroup=dl.queueGroup and dl2.identifier=dl.identifier) "
+                                                       + "where dl.identifier.queueGroup=:group "
+                                                       + "and dl.index = (select min(dl2.index) from DeadLetterEntry dl2 where dl2.identifier.queueGroup=dl.identifier.queueGroup and dl2.identifier=dl.identifier) "
                                                        + "and dl.expiresAt < :expiryLimit "
                                                        + "and (dl.processingStarted is null or dl.processingStarted < :processingStartedLimit) "
                                                        + "order by dl.expiresAt asc",
@@ -403,36 +428,82 @@ public class JpaDeadLetterQueue<T extends EventMessage<?>> extends SchedulingDea
     }
 
     @Override
-    public void release(@Nonnull Predicate<DeadLetter<T>> letterFilter) {
-        Instant expiresAt = clock.instant();
+    public void release() {
         transactionManager.executeInTransaction(() -> {
-            Stream<DeadLetter<T>> releasedLetters = entityManager()
-                    .createQuery("select dl from DeadLetterEntry dl order by dl.expiresAt asc", DeadLetterEntry.class)
-                    .getResultStream()
-                    .map(entry -> {
-                        DeadLetter<T> deadLetter = toDeadLetter(entry);
-                        if (letterFilter.test(deadLetter)) {
-                            entry.setExpiresAt(expiresAt);
-                            return deadLetter;
-                        }
-                        return null;
-                    })
-                    .filter(Objects::nonNull);
+            List<DeadLetterQueueIdentifier> releasedIdentifiers = getAllQueueIdentifiers()
+                    .collect(Collectors.toList());
+
+            entityManager().createQuery(
+                                   "update DeadLetterEntry dl set dl.expiresAt=:time where dl.identifier in :identifiers")
+                           .setParameter("time", clock.instant())
+                           .setParameter("identifiers", releasedIdentifiers)
+                           .executeUpdate();
 
             entityManager().flush();
-            notifyAvailabilityCallbacksOfRelease(releasedLetters);
+            entityManager().clear();
+            notifyAvailabilityCallbacksOfRelease(releasedIdentifiers);
         });
     }
 
-    private void notifyAvailabilityCallbacksOfRelease(Stream<DeadLetter<T>> releasedLetters) {
-        Stream<String> groups = releasedLetters
-                .map(DeadLetter::queueIdentifier)
-                .map(QueueIdentifier::group)
-                .distinct();
+    @Override
+    public void release(@Nonnull String group) {
+        transactionManager.executeInTransaction(() -> {
+            List<DeadLetterQueueIdentifier> releasedIdentifiers = getAllQueueIdentifiers(group)
+                    .collect(Collectors.toList());
 
-        groups.map(availabilityCallbacks::get)
-              .filter(Objects::nonNull)
-              .forEach(scheduledExecutorService::submit);
+            entityManager().createQuery(
+                                   "update DeadLetterEntry dl set dl.expiresAt=:time")
+                           .setParameter("time", clock.instant())
+                           .executeUpdate();
+
+            entityManager().flush();
+            entityManager().clear();
+            notifyAvailabilityCallbacksOfRelease(releasedIdentifiers);
+        });
+    }
+
+    @Override
+    public void release(@Nonnull Predicate<QueueIdentifier> queueFilter) {
+        transactionManager.executeInTransaction(() -> {
+            List<DeadLetterQueueIdentifier> releasedIdentifiers = getAllQueueIdentifiers()
+                    .filter(queueFilter)
+                    .collect(Collectors.toList());
+
+            entityManager().createQuery(
+                                   "update DeadLetterEntry dl set dl.expiresAt=:time where dl.identifier in :identifiers")
+                           .setParameter("time", clock.instant())
+                           .setParameter("identifiers", releasedIdentifiers)
+                           .executeUpdate();
+
+            entityManager().flush();
+            entityManager().clear();
+            notifyAvailabilityCallbacksOfRelease(releasedIdentifiers);
+        });
+    }
+
+    private Stream<DeadLetterQueueIdentifier> getAllQueueIdentifiers() {
+        return entityManager()
+                .createQuery("select distinct(dl.identifier) from DeadLetterEntry dl",
+                             DeadLetterQueueIdentifier.class)
+                .getResultStream();
+    }
+
+    private Stream<DeadLetterQueueIdentifier> getAllQueueIdentifiers(String group) {
+        return entityManager()
+                .createQuery(
+                        "select distinct(dl.identifier) from DeadLetterEntry dl where dl.identifier.queueGroup=:group",
+                        DeadLetterQueueIdentifier.class)
+                .setParameter("group", group)
+                .getResultStream();
+    }
+
+    private void notifyAvailabilityCallbacksOfRelease(List<DeadLetterQueueIdentifier> releasedIdentifiers) {
+        releasedIdentifiers.stream()
+                           .map(DeadLetterQueueIdentifier::group)
+                           .distinct()
+                           .map(availabilityCallbacks::get)
+                           .filter(Objects::nonNull)
+                           .forEach(scheduledExecutorService::submit);
     }
 
     @Override
@@ -450,7 +521,7 @@ public class JpaDeadLetterQueue<T extends EventMessage<?>> extends SchedulingDea
         clearedIdentifiers.forEach(queueIdentifier ->
                                            entityManager()
                                                    .createQuery(
-                                                           "delete from DeadLetterEntry dl where dl.identifier=:identifier and dl.queueGroup=:group")
+                                                           "delete from DeadLetterEntry dl where dl.identifier.identifier=:identifier and dl.identifier.queueGroup=:group")
                                                    .setParameter("group", queueIdentifier.group())
                                                    .setParameter("identifier", queueIdentifier.identifier())
                                                    .executeUpdate()

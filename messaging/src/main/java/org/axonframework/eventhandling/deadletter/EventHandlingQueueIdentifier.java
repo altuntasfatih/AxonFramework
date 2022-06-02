@@ -64,12 +64,12 @@ public class EventHandlingQueueIdentifier implements QueueIdentifier {
         if (this == o) {
             return true;
         }
-        if (o == null || getClass() != o.getClass()) {
+        if (!(o instanceof QueueIdentifier)) {
             return false;
         }
-        EventHandlingQueueIdentifier that = (EventHandlingQueueIdentifier) o;
-        return Objects.equals(sequenceIdentifier, that.sequenceIdentifier)
-                && Objects.equals(processingGroup, that.processingGroup);
+        QueueIdentifier that = (QueueIdentifier) o;
+        return Objects.equals(sequenceIdentifier, that.identifier())
+                && Objects.equals(processingGroup, that.group());
     }
 
     @Override
