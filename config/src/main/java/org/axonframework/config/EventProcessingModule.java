@@ -259,20 +259,10 @@ public class EventProcessingModule
             handlerInvokers.computeIfAbsent(processorName, k -> new ArrayList<>()).add(
                     c -> {
                         if (deadLetterQueues.containsKey(processingGroup)) {
-                            return DeadLetteringEventHandlerInvoker.builder()
-                                                                   .eventHandlers(handlers)
-                                                                   .handlerDefinition(retrieveHandlerDefinition(handlers))
-                                                                   .parameterResolverFactory(configuration.parameterResolverFactory())
-                                                                   .sequencingPolicy(sequencingPolicy(processingGroup))
-                                                                   .queue(deadLetterQueue(processingGroup))
-                                                                   .processingGroup(processingGroup)
-                                                                   .transactionManager(transactionManager(processorName))
-                                                                   .listenerInvocationErrorHandler(
-                                                                           listenerInvocationErrorHandler(
-                                                                                   processingGroup
-                                                                           )
-                                                                   )
-                                                                   .build();
+                            return createDeadLetteringInvoker(
+                                    processingGroup,
+                                    handlers,
+                                    processorName);
                         }
                         return SimpleEventHandlerInvoker.builder()
                                                         .eventHandlers(handlers)
@@ -288,13 +278,31 @@ public class EventProcessingModule
         });
     }
 
+    private DeadLetteringEventHandlerInvoker createDeadLetteringInvoker(String processingGroup,
+                                                                        List<Object> handlers,
+                                                                        String processorName) {
+        DeadLetteringEventHandlerInvoker invoker = DeadLetteringEventHandlerInvoker
+                .builder()
+                .eventHandlers(handlers)
+                .handlerDefinition(retrieveHandlerDefinition(handlers))
+                .parameterResolverFactory(configuration.parameterResolverFactory())
+                .sequencingPolicy(sequencingPolicy(processingGroup))
+                .queue(deadLetterQueue(processingGroup))
+                .processingGroup(processingGroup)
+                .transactionManager(transactionManager(processorName))
+                // TODO: Let user override error handler?
+                .build();
+        LifecycleHandlerInspector.registerLifecycleHandlers(configuration, invoker);
+        return invoker;
+    }
+
     /**
-     * The class is required to be provided in case the {@code ClasspathHandlerDefinition is used to retrieve the {@link
-     * HandlerDefinition}. Ideally, a {@code HandlerDefinition} would be retrieved per event handling class, as
-     * potentially users would be able to define different {@link ClassLoader} instances per event handling class
-     * contained in an Event Processor. For now we have deduced the latter to be to much of an edge case. Hence we
-     * assume users will use the same ClassLoader for differing event handling instance within a single Event
-     * Processor.
+     * The class is required to be provided in case the
+     * {@code ClasspathHandlerDefinition is used to retrieve the {@link HandlerDefinition}. Ideally, a {@code
+     * HandlerDefinition} would be retrieved per event handling class, as potentially users would be able to define
+     * different {@link ClassLoader} instances per event handling class contained in an Event Processor. For now we have
+     * deduced the latter to be to much of an edge case. Hence we assume users will use the same ClassLoader for
+     * differing event handling instance within a single Event Processor.
      */
     private HandlerDefinition retrieveHandlerDefinition(List<Object> handlers) {
         return configuration.handlerDefinition(handlers.get(0).getClass());

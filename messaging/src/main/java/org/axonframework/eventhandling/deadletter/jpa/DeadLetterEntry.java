@@ -153,7 +153,7 @@ public class DeadLetterEntry extends AbstractEventEntry<byte[]> {
     }
 
 
-    @Formula("concat(queueGroup,identifier)")
+    @Formula("concat(queue_group,identifier)")
     private String queueIdentifierConcatenated;
 
     public String getQueueIdentifierConcatenated() {
