@@ -290,7 +290,12 @@ public class EventProcessingModule
                 .queue(deadLetterQueue(processingGroup))
                 .processingGroup(processingGroup)
                 .transactionManager(transactionManager(processorName))
-                // TODO: Let user override error handler?
+                // For the dead lettering invoker, we want to default to the PropagatingErrorHandler to prevent messages
+                // from being acknowledged while failing.
+                .listenerInvocationErrorHandler(listenerInvocationErrorHandlers.containsKey(processingGroup)
+                                                        ? listenerInvocationErrorHandlers.get(processingGroup).get()
+                                                        : PropagatingErrorHandler.INSTANCE
+                )
                 .build();
         LifecycleHandlerInspector.registerLifecycleHandlers(configuration, invoker);
         return invoker;
