@@ -31,7 +31,6 @@ import org.axonframework.messaging.deadletter.QueueIdentifier;
 import org.axonframework.messaging.unitofwork.RollbackConfigurationType;
 import org.axonframework.utils.InMemoryStreamableEventSource;
 import org.junit.jupiter.api.*;
-import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.util.HashMap;
@@ -63,17 +62,17 @@ import static org.junit.jupiter.api.Assertions.*;
  */
 public abstract class DeadLetteringEventIntegrationTest {
 
-    private static final String PROCESSING_GROUP = "problematicProcessingGroup";
-    private static final boolean SUCCEED = true;
-    private static final boolean SUCCEED_RETRY = true;
-    private static final boolean FAIL = false;
-    private static final boolean FAIL_RETRY = false;
+    protected static final String PROCESSING_GROUP = "problematicProcessingGroup";
+    protected static final boolean SUCCEED = true;
+    protected static final boolean SUCCEED_RETRY = true;
+    protected static final boolean FAIL = false;
+    protected static final boolean FAIL_RETRY = false;
 
-    private ProblematicEventHandlingComponent eventHandlingComponent;
-    private DeadLetterQueue<EventMessage<?>> deadLetterQueue;
-    private DeadLetteringEventHandlerInvoker deadLetteringInvoker;
-    private InMemoryStreamableEventSource eventSource;
-    private StreamingEventProcessor streamingProcessor;
+    protected ProblematicEventHandlingComponent eventHandlingComponent;
+    protected DeadLetterQueue<EventMessage<?>> deadLetterQueue;
+    protected DeadLetteringEventHandlerInvoker deadLetteringInvoker;
+    protected InMemoryStreamableEventSource eventSource;
+    protected StreamingEventProcessor streamingProcessor;
 
     /**
      * Constructs the {@link DeadLetterQueue} implementation used during the integration test.
@@ -123,18 +122,15 @@ public abstract class DeadLetteringEventIntegrationTest {
         }
     }
 
-    @Transactional
-    void startProcessingEvent() {
+    protected void startProcessingEvent() {
         streamingProcessor.start();
     }
 
-    @Transactional
-    void startDeadLetterEvaluation() {
+    protected void startDeadLetterEvaluation() {
         deadLetteringInvoker.start();
     }
 
     @Test
-    @Transactional
     void testFailedEventHandlingEnqueuesTheEvent() {
         eventSource.publishMessage(GenericEventMessage.asEventMessage(new DeadLetterableEvent("success", SUCCEED, 1)));
         eventSource.publishMessage(GenericEventMessage.asEventMessage(new DeadLetterableEvent("failure", FAIL, 2)));
@@ -156,7 +152,6 @@ public abstract class DeadLetteringEventIntegrationTest {
     }
 
     @Test
-    @Transactional(propagation = Propagation.REQUIRES_NEW)
     void testEventsInTheSameSequenceAreAllEnqueuedIfOneOfThemFails() {
         int expectedSuccessfulHandlingCount = 3;
         String aggregateId = UUID.randomUUID().toString();
@@ -218,7 +213,6 @@ public abstract class DeadLetteringEventIntegrationTest {
     }
 
     @Test
-    @Transactional
     void testSuccessfulEvaluationRemovesTheDeadLetterFromTheQueue() {
         int expectedSuccessfulHandlingCount = 3;
         int expectedSuccessfulHandlingCountAfterEvaluation = 6;
@@ -262,7 +256,6 @@ public abstract class DeadLetteringEventIntegrationTest {
     }
 
     @Test
-    @Transactional
     void testUnsuccessfulEvaluationRequeuesTheDeadLetterInTheQueue() {
         int expectedSuccessfulHandlingCount = 3;
         int expectedSuccessfulHandlingCountAfterEvaluation = 5;
@@ -315,7 +308,7 @@ public abstract class DeadLetteringEventIntegrationTest {
 
     // TODO: 09-05-22 concurrency tests
 
-    private static class ProblematicEventHandlingComponent {
+    protected static class ProblematicEventHandlingComponent {
 
         private final Map<String, Integer> successfullyHandled = new HashMap<>();
         private final Map<String, Integer> unsuccessfullyHandled = new HashMap<>();
@@ -354,19 +347,19 @@ public abstract class DeadLetteringEventIntegrationTest {
         }
     }
 
-    private static class DeadLetterableEvent {
+    protected static class DeadLetterableEvent {
 
         private final String aggregateIdentifier;
         private final int sequence;
         private final boolean shouldSucceed;
         private final boolean shouldSucceedOnEvaluation;
 
-        private DeadLetterableEvent(String aggregateIdentifier,
+        public DeadLetterableEvent(String aggregateIdentifier,
                                     boolean shouldSucceed, int sequence) {
             this(aggregateIdentifier, sequence, shouldSucceed, true);
         }
 
-        private DeadLetterableEvent(String aggregateIdentifier,
+        public DeadLetterableEvent(String aggregateIdentifier,
                                     int sequence, boolean shouldSucceed,
                                     boolean shouldSucceedOnEvaluation) {
             this.aggregateIdentifier = aggregateIdentifier;

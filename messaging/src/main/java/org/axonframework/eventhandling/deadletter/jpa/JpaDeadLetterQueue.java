@@ -245,7 +245,7 @@ public class JpaDeadLetterQueue<T extends EventMessage<?>> extends SchedulingDea
                                                                    upcasterChain)
                                        .findFirst()
                                        .orElse(null);
-        // TODO: Upcast to null test
+
         return new GenericDeadLetter<>(
                 entry.getDeadLetterId(),
                 entry.getIdentifier(),

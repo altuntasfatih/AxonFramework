@@ -21,19 +21,28 @@ import org.axonframework.common.jpa.SimpleEntityManagerProvider;
 import org.axonframework.common.transaction.Transaction;
 import org.axonframework.common.transaction.TransactionManager;
 import org.axonframework.eventhandling.EventMessage;
+import org.axonframework.eventhandling.GenericEventMessage;
 import org.axonframework.eventhandling.deadletter.DeadLetteringEventHandlerInvoker;
 import org.axonframework.eventhandling.deadletter.DeadLetteringEventIntegrationTest;
+import org.axonframework.eventhandling.deadletter.EventHandlingQueueIdentifier;
 import org.axonframework.messaging.deadletter.DeadLetterQueue;
+import org.axonframework.messaging.deadletter.QueueIdentifier;
+import org.axonframework.serialization.upcasting.event.EventUpcaster;
 import org.junit.jupiter.api.*;
 
 import java.sql.SQLException;
 import java.time.Duration;
+import java.util.UUID;
 import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+import java.util.stream.Stream;
 import javax.persistence.EntityManager;
 import javax.persistence.EntityManagerFactory;
 import javax.persistence.EntityTransaction;
 import javax.persistence.Persistence;
 
+import static org.axonframework.utils.AssertUtils.assertWithin;
+import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.Mockito.*;
 
 /**
@@ -48,11 +57,15 @@ class JpaDeadLetteringIntegrationTest extends DeadLetteringEventIntegrationTest 
     EntityManager entityManager = emf.createEntityManager();
     private final TransactionManager transactionManager = spy(new NoOpTransactionManager());
     private EntityTransaction transaction;
+    private EventUpcaster eventUpcaster = mock(EventUpcaster.class);
 
     @BeforeEach
     public void setUpJpa() throws SQLException {
         transaction = entityManager.getTransaction();
         transaction.begin();
+
+        // By default, do not upcast
+        when(eventUpcaster.upcast(any())).thenAnswer(invocationOnMock -> invocationOnMock.getArgument(0));
     }
 
     @AfterEach
@@ -71,7 +84,42 @@ class JpaDeadLetteringIntegrationTest extends DeadLetteringEventIntegrationTest 
                                  .entityManagerProvider(entityManagerProvider)
                                  .expireThreshold(Duration.ofMillis(50))
                                  .scheduledExecutorService(Executors.newSingleThreadScheduledExecutor())
+                                 .upcasterChain(eventUpcaster)
                                  .build();
+    }
+
+    @Test
+    void testUpcasterChainReturningNullWorksCorrectly() {
+        String aggregateId = UUID.randomUUID().toString();
+        QueueIdentifier queueId = new EventHandlingQueueIdentifier(aggregateId, PROCESSING_GROUP);
+        eventSource.publishMessage(GenericEventMessage.asEventMessage(new DeadLetterableEvent(aggregateId,
+                                                                                              FAIL,
+                                                                                              1)));
+
+        when(eventUpcaster.upcast(any())).thenAnswer(invocationOnMock -> Stream.empty());
+
+        startProcessingEvent();
+
+        assertWithin(1, TimeUnit.SECONDS, () -> assertEquals(1, streamingProcessor.processingStatus().size()));
+        //noinspection OptionalGetWithoutIsPresent
+        assertWithin(
+                1, TimeUnit.SECONDS,
+                () -> assertTrue(streamingProcessor.processingStatus().get(0).getCurrentPosition().getAsLong() >= 1)
+        );
+
+        assertTrue(eventHandlingComponent.unsuccessfullyHandled(aggregateId));
+        assertEquals(1, eventHandlingComponent.unsuccessfulHandlingCount(aggregateId));
+
+        assertTrue(deadLetterQueue.contains(queueId));
+
+        startDeadLetterEvaluation();
+
+        // Should not contain the messages (since they were upcasted to null), and also not have been executed
+        assertWithin(1, TimeUnit.SECONDS, () -> assertFalse(deadLetterQueue.contains(queueId)));
+        assertWithin(1, TimeUnit.SECONDS, () -> assertEquals(
+                0,
+                eventHandlingComponent.successfulHandlingCount(aggregateId)
+        ));
     }
 
     /**
